@@ -2,11 +2,14 @@ from __future__ import print_function
 import json
 import os
 import pyjq
+import logging
 
 from shared.nodes import Account, Region, is_public_ip
 from commands.prepare import build_data_structure
 from shared.common import get_regions, query_aws
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def regroup_ranges(rgs):
     """
@@ -70,6 +73,9 @@ def get_public_nodes(account, config, use_cache=False):
     # TODO Integrate into something to more easily port scan and screenshot web services
 
     # Try reading from cache
+    
+    logger.info("Starting get_public_nodes")
+
     cache_file_path = "account-data/{}/public_nodes.json".format(account["name"])
     if use_cache:
         if os.path.isfile(cache_file_path):
@@ -86,10 +92,14 @@ def get_public_nodes(account, config, use_cache=False):
         "collapse_asgs": True,
         "mute": True,
     }
+
+    logger.info(f'Calling build_data_structure for {account}')
     network = build_data_structure(account, config, outputfilter)
 
     public_nodes = []
     warnings = []
+
+    logger.info("Looping through all edges connected to 0.0.0.0/0")
 
     # Look at all the edges for ones connected to the public Internet (0.0.0.0/0)
     for edge in pyjq.all(
@@ -101,6 +111,7 @@ def get_public_nodes(account, config, use_cache=False):
         target_node = pyjq.first(
             '.[].data|select(.id=="{}")'.format(target["arn"]), network, {}
         )
+        logger.info(f'Target node type: {target_node["type"]}')
 
         # Depending on the type of node, identify what the IP or hostname is
         if target_node["type"] == "elb":
@@ -138,6 +149,8 @@ def get_public_nodes(account, config, use_cache=False):
         else:
             # Unknown node
             raise Exception("Unknown type: {}".format(target_node["type"]))
+        
+        logger.info(f'Target node: {target["hostname"]}')
 
         # Check if any protocol is allowed (indicated by IpProtocol == -1)
         ingress = pyjq.all(".[]", edge.get("node_data", {}))
@@ -147,6 +160,7 @@ def get_public_nodes(account, config, use_cache=False):
         )
         public_sgs = {}
         if sg_group_allowing_all_protocols is not None:
+            logger.info("sg_group_allowing_all_protocols is not None")
             warnings.append(
                 "All protocols allowed access to {} due to {}".format(
                     target, sg_group_allowing_all_protocols
@@ -158,7 +172,9 @@ def get_public_nodes(account, config, use_cache=False):
             # from_port and to_port mean the beginning and end of a port range
             # We only care about TCP (6) and UDP (17)
             # For more info see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/security-group-rules-reference.html
+            logger.info("sg_group_allowing_all_protocols is None")
             port_ranges = []
+            logger.info("Looping throguth each sg in ingress")
             for sg in ingress:
                 sg_port_ranges = []
                 for ip_permission in sg.get("IpPermissions", []):
@@ -192,6 +208,7 @@ def get_public_nodes(account, config, use_cache=False):
                         account,
                     )
                 )
+            logger.info("Appending target ro public_nodes")
             public_nodes.append(target)
 
     # For the network diagram, if an ELB has availability across 3 subnets, I put one node in each subnet.
@@ -202,6 +219,7 @@ def get_public_nodes(account, config, use_cache=False):
 
     reduced_nodes = {}
 
+    logger.info("Looping through each node in public_nodes")
     for node in public_nodes:
         reduced_nodes[node["hostname"]] = node
 
@@ -210,8 +228,10 @@ def get_public_nodes(account, config, use_cache=False):
         public_nodes.append(node)
 
     account = Account(None, account)
+    logger.info("Looping throuhg regions for account")
     for region_json in get_regions(account):
         region = Region(account, region_json)
+        logger.info(f'Region: {region.name}')
         # Look for CloudFront
         if region.name == "us-east-1":
             json_blob = query_aws(
@@ -230,8 +250,10 @@ def get_public_nodes(account, config, use_cache=False):
                 public_nodes.append(target)
 
         # Look for API Gateway
+        logger.info(f'Calling query_aws for {region.account}')
         json_blob = query_aws(region.account, "apigateway-get-rest-apis", region)
         if json_blob is not None:
+            logger.info('Query is not None')
             for api in json_blob.get("items", []):
                 target = {"arn": api["id"], "account": account.name}
                 target["type"] = "apigateway"
@@ -243,6 +265,7 @@ def get_public_nodes(account, config, use_cache=False):
                 public_nodes.append(target)
 
     # Write cache file
+    logger.info("Writing cache file")
     with open(cache_file_path, "w") as f:
         f.write(json.dumps(public_nodes, indent=4, sort_keys=True))
 
