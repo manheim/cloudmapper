@@ -208,7 +208,7 @@ def get_public_nodes(account, config, use_cache=False):
                         account,
                     )
                 )
-            logger.info("Appending target ro public_nodes")
+            logger.info("Appending target to public_nodes")
             public_nodes.append(target)
 
     # For the network diagram, if an ELB has availability across 3 subnets, I put one node in each subnet.
@@ -250,10 +250,8 @@ def get_public_nodes(account, config, use_cache=False):
                 public_nodes.append(target)
 
         # Look for API Gateway
-        logger.info(f'Calling query_aws for {region.account}')
         json_blob = query_aws(region.account, "apigateway-get-rest-apis", region)
         if json_blob is not None:
-            logger.info('Query is not None')
             for api in json_blob.get("items", []):
                 target = {"arn": api["id"], "account": account.name}
                 target["type"] = "apigateway"
